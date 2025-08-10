@@ -142,6 +142,98 @@ def glide_view_predictions():
     return _json_ok({"predictions": items})
 
 # ---- MAIN (Railway port) ----
+import io, csv
+
+def _flatten_predictions(items):
+    """Flatten your per-game predictions into uniform rows."""
+    flat = []
+    for g in items:
+        game = g.get("game")
+        date = g.get("date")
+        hot = g.get("hot_number")
+        mirror = g.get("mirror_number")
+        acc = g.get("model_accuracy")
+        for p in g.get("predictions", []):
+            flat.append({
+                "date": date,
+                "game": game,
+                "hot": hot,
+                "mirror": mirror,
+                "model_accuracy": acc,
+                "combo": p.get("combo"),
+                "final_score": p.get("final_score"),
+            })
+    return flat
+
+def _to_csv_response(rows, filename="predictions.csv"):
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=["date","game","hot","mirror","model_accuracy","combo","final_score"],
+        extrasaction="ignore"
+    )
+    writer.writeheader()
+    for r in rows:
+        writer.writerow(r)
+    data = output.getvalue()
+    from flask import Response
+    resp = Response(data, mimetype="text/csv")
+    resp.headers["Content-Disposition"] = f'inline; filename="{filename}"'
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+@app.route("/predictions_csv")
+def predictions_csv():
+    # Auth
+    auth = _require_key()
+    if auth: return auth
+
+    # Load JSON like in /predictions
+    src = os.path.join(DATA_DIR, "predictions", "predictions.json")
+    data = _load_json(src) or {"predictions": []}
+    items = data.get("predictions", [])
+
+    # Optional filters
+    game = request.args.get("game")  # exact match, case-insensitive
+    date = request.args.get("date")  # YYYY-MM-DD
+    if game:
+        items = [r for r in items if str(r.get("game","")).lower() == game.lower()]
+    if date:
+        items = [r for r in items if str(r.get("date")) == date]
+
+    # Flatten & return CSV
+    rows = _flatten_predictions(items)
+    fname = f'predictions_{(game or "all").replace(" ","_")}.csv'
+    return _to_csv_response(rows, filename=fname)
+
+# ---- Convenience endpoints for four games ----
+@app.route("/predictions_csv/mega")
+def predictions_csv_mega():
+    with app.test_request_context(
+        f'/predictions_csv?game=Mega%20millions&key={request.args.get("key","")}'
+    ):
+        return predictions_csv()
+
+@app.route("/predictions_csv/powerball")
+def predictions_csv_powerball():
+    with app.test_request_context(
+        f'/predictions_csv?game=Powerball&key={request.args.get("key","")}'
+    ):
+        return predictions_csv()
+
+@app.route("/predictions_csv/nywin3")
+def predictions_csv_nywin3():
+    with app.test_request_context(
+        f'/predictions_csv?game=NY%20win3&key={request.args.get("key","")}'
+    ):
+        return predictions_csv()
+
+@app.route("/predictions_csv/nywin4")
+def predictions_csv_nywin4():
+    with app.test_request_context(
+        f'/predictions_csv?game=NY%20win4&key={request.args.get("key","")}'
+    ):
+        return predictions_csv()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
