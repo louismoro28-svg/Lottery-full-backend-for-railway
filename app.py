@@ -1,73 +1,147 @@
+import os, json, glob
+from datetime import datetime
+from flask import Flask, jsonify, request, send_file, abort
+from flask_cors import CORS
 
-from flask import Flask, jsonify, request, send_file
-import os
-
+# ---- App + CORS ----
 app = Flask(__name__)
+CORS(app)
 
-API_KEY = os.environ.get("API_KEY", "mysecretkey123")
+# ---- Config ----
+API_KEY = os.environ.get("API_KEY", "mysecretkey123")   # set in Railway Variables
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
-# Health endpoint
+# ---- Helpers ----
+def _require_key():
+    key = request.args.get("key")
+    if not API_KEY or key != API_KEY:
+        return jsonify({"error": "Unauthorized"}), 403
+
+def _load_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+def _json_ok(payload):
+    # Add no-cache so Glide always sees fresh data when you update
+    resp = jsonify(payload)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+# ---- Basic routes ----
+@app.route("/")
+def home():
+    return _json_ok({"status": "ok", "message": "Lottery backend is running (Flask) on Railway"})
+
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "message": "Glide Lottery API (Full Backend)"})
+    return _json_ok({"status": "ok"})
 
-# Predictions
+# ---- PREDICTIONS ----
+# Source file: data/predictions/predictions.json
+# Supports optional ?game= and ?date= (YYYY-MM-DD)
 @app.route("/predictions")
 def predictions():
-    key = request.args.get("key")
-    if key != API_KEY:
-        return jsonify({"error": "Unauthorized"}), 403
-    return jsonify({"predictions": [{"game": "Pick 3", "date": "2024-08-01", "hot_number": 7}]})
-    
-@app.route("/predictions.csv")
-def predictions_csv():
-    key = request.args.get("key")
-    if key != API_KEY:
-        return jsonify({"error": "Unauthorized"}), 403
-    csv_content = "game,date,hot_number\nPick 3,2024-08-01,7\n"
-    return csv_content, 200, {"Content-Type": "text/csv"}
+    auth = _require_key()
+    if auth: return auth
 
-# Weekly report (clean)
+    src = os.path.join(DATA_DIR, "predictions", "predictions.json")
+    data = _load_json(src) or {"predictions": []}
+    items = data.get("predictions", [])
+
+    game = request.args.get("game")
+    date = request.args.get("date")
+    if game:
+        items = [r for r in items if str(r.get("game","")).lower() == game.lower()]
+    if date:
+        items = [r for r in items if str(r.get("date")) == date]
+
+    return _json_ok(items)
+
+# ---- WEEKLY REPORT (Glide-friendly) ----
+# Source file: data/weekly_report/weekly_report.json
+# Returns an object with "report_data" so Glide JSON Path works
 @app.route("/glide_weekly_report")
 def glide_weekly_report():
-    key = request.args.get("key")
-    if key != API_KEY:
-        return jsonify({"error": "Unauthorized"}), 403
-    return jsonify({"report_data": [{"game": "Pick 3", "predictions_count": 12, "hit_count": 3}]})
-    
-# Weekly report alias for old path
-@app.route("/predictions/data/glide_weekly_report.json")
-def glide_weekly_report_alias():
-    return glide_weekly_report()
+    auth = _require_key()
+    if auth: return auth
 
-# View predictions
+    src = os.path.join(DATA_DIR, "weekly_report", "weekly_report.json")
+    report = _load_json(src) or {"report_data": []}
+    # Ensure shape is stable for Glide
+    if isinstance(report, list):
+        report = {"report_data": report}
+    if "report_data" not in report:
+        report = {"report_data": []}
+    return _json_ok(report)
+
+# ---- HISTORICAL WEEK (one file) ----
+# Looks for latest file in data/historical_week/*.json or ?date=YYYY-MM-DD
+@app.route("/historical_week")
+def historical_week():
+    auth = _require_key()
+    if auth: return auth
+
+    hw_dir = os.path.join(DATA_DIR, "historical_week")
+    date = request.args.get("date")  # expecting YYYY-MM-DD in filename
+    path = None
+
+    if date:
+        # try exact match in filename
+        matches = glob.glob(os.path.join(hw_dir, f"*{date}*.json"))
+        if matches:
+            path = sorted(matches)[-1]
+    else:
+        matches = glob.glob(os.path.join(hw_dir, "*.json"))
+        if matches:
+            path = sorted(matches)[-1]
+
+    js = _load_json(path) if path else None
+    return _json_ok(js or {"report_data": []})
+
+# ---- BACKTEST ----
+# Source: data/backtest/backtest.json
+@app.route("/backtest")
+def backtest():
+    auth = _require_key()
+    if auth: return auth
+
+    src = os.path.join(DATA_DIR, "backtest", "backtest.json")
+    data = _load_json(src) or {"results": []}
+    return _json_ok(data)
+
+# ---- ARCHIVES ----
+# List all archive files (date keyed) or return specific file with ?date=YYYY-MM-DD
+@app.route("/archives")
+def archives():
+    auth = _require_key()
+    if auth: return auth
+
+    arc_dir = os.path.join(DATA_DIR, "archives")
+    date = request.args.get("date")
+    if date:
+        matches = glob.glob(os.path.join(arc_dir, f"*{date}*.json"))
+        if matches:
+            js = _load_json(sorted(matches)[-1])
+            return _json_ok(js or {})
+        return _json_ok({"error": "not found", "date": date})
+
+    files = sorted(os.path.basename(p) for p in glob.glob(os.path.join(arc_dir, "*.json")))
+    return _json_ok({"files": files})
+
+# ---- Legacy /Glide aliases kept for your app rows ----
 @app.route("/glide_view_predictions")
 def glide_view_predictions():
-    key = request.args.get("key")
-    if key != API_KEY:
-        return jsonify({"error": "Unauthorized"}), 403
-    return jsonify({"predictions": [{"date": "2024-08-01", "first_combo": "123"}]})
+    # Same as /predictions but returns {"predictions": [...]}
+    auth = _require_key()
+    if auth: return auth
+    with app.test_request_context():
+        items = predictions().json if hasattr(predictions(), "json") else []
+    return _json_ok({"predictions": items})
 
-# Backtest
-@app.route("/glide_backtest")
-def glide_backtest():
-    key = request.args.get("key")
-    if key != API_KEY:
-        return jsonify({"error": "Unauthorized"}), 403
-    return jsonify({"backtest": {"hit_rate": 75}})
-
-# Historical weekly
-@app.route("/weekly_report_for_week")
-def weekly_report_for_week():
-    key = request.args.get("key")
-    if key != API_KEY:
-        return jsonify({"error": "Unauthorized"}), 403
-    return jsonify({"historical": [{"week": "2024-07-01", "hit_rate": 50}]})
-    
-# Alias for historical weekly
-@app.route("/glide_weekly_report_for_week")
-def glide_weekly_report_for_week_alias():
-    return weekly_report_for_week()
-
+# ---- MAIN (Railway port) ----
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
