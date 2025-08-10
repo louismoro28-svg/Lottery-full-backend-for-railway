@@ -1,19 +1,24 @@
-import os, json, glob
+import os, json, glob, io, csv
 from datetime import datetime
-from flask import Flask, jsonify, request, send_file, abort
+from flask import Flask, jsonify, request, make_response
 from flask_cors import CORS
-from flask import make_response
-import csv
 from io import StringIO
-# ---- App + CORS ----
+
+# -------------------------
+# App + CORS
+# -------------------------
 app = Flask(__name__)
 CORS(app)
 
-# ---- Config ----
-API_KEY = os.environ.get("API_KEY", "mysecretkey123")   # set in Railway Variables
+# -------------------------
+# Config
+# -------------------------
+API_KEY = os.environ.get("API_KEY", "mysecretkey123")  # set in Railway Variables
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
-# ---- Helpers ----
+# -------------------------
+# Helpers
+# -------------------------
 def _require_key():
     key = request.args.get("key")
     if not API_KEY or key != API_KEY:
@@ -27,15 +32,12 @@ def _load_json(path):
         return None
 
 def _json_ok(payload):
-    # Add no-cache so Glide always sees fresh data when you update
     resp = jsonify(payload)
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
-# ---- Basic routes ----
 def _to_csv_response(rows, filename="data.csv"):
     out = StringIO()
-    # choose columns from keys present
     cols = sorted({k for r in rows for k in r.keys()}) if rows else ["message"]
     writer = csv.DictWriter(out, fieldnames=cols)
     writer.writeheader()
@@ -51,134 +53,14 @@ def _to_csv_response(rows, filename="data.csv"):
     return resp
 
 def _flatten_predictions(items):
-    rows = []
-    for r in items or []:
-        combo = r.get("prediction")
-        if isinstance(combo, list):
-            combo = " ".join(map(str, combo))
-        rows.append({
-            "date": r.get("date"),
-            "game": r.get("game"),
-            "prediction": combo,
-            "confidence": r.get("confidence")
-        })
-    return rows@app.route("/")
-def home():
-    return _json_ok({"status": "ok", "message": "Lottery backend is running (Flask) on Railway"})
-
-@app.route("/health")
-def health():
-    return _json_ok({"status": "ok"})
-
-# ---- PREDICTIONS ----
-# Source file: data/predictions/predictions.json
-# Supports optional ?game= and ?date= (YYYY-MM-DD)
-@app.route("/predictions")
-def predictions():
-    auth = _require_key()
-    if auth: return auth
-
-    src = os.path.join(DATA_DIR, "predictions", "predictions.json")
-    data = _load_json(src) or {"predictions": []}
-    items = data.get("predictions", [])
-
-    game = request.args.get("game")
-    date = request.args.get("date")
-    if game:
-        items = [r for r in items if str(r.get("game","")).lower() == game.lower()]
-    if date:
-        items = [r for r in items if str(r.get("date")) == date]
-
-    return _json_ok(items)
-
-# ---- WEEKLY REPORT (Glide-friendly) ----
-# Source file: data/weekly_report/weekly_report.json
-# Returns an object with "report_data" so Glide JSON Path works
-@app.route("/glide_weekly_report")
-def glide_weekly_report():
-    auth = _require_key()
-    if auth: return auth
-
-    src = os.path.join(DATA_DIR, "weekly_report", "weekly_report.json")
-    report = _load_json(src) or {"report_data": []}
-    # Ensure shape is stable for Glide
-    if isinstance(report, list):
-        report = {"report_data": report}
-    if "report_data" not in report:
-        report = {"report_data": []}
-    return _json_ok(report)
-
-# ---- HISTORICAL WEEK (one file) ----
-# Looks for latest file in data/historical_week/*.json or ?date=YYYY-MM-DD
-@app.route("/historical_week")
-def historical_week():
-    auth = _require_key()
-    if auth: return auth
-
-    hw_dir = os.path.join(DATA_DIR, "historical_week")
-    date = request.args.get("date")  # expecting YYYY-MM-DD in filename
-    path = None
-
-    if date:
-        # try exact match in filename
-        matches = glob.glob(os.path.join(hw_dir, f"*{date}*.json"))
-        if matches:
-            path = sorted(matches)[-1]
-    else:
-        matches = glob.glob(os.path.join(hw_dir, "*.json"))
-        if matches:
-            path = sorted(matches)[-1]
-
-    js = _load_json(path) if path else None
-    return _json_ok(js or {"report_data": []})
-
-# ---- BACKTEST ----
-# Source: data/backtest/backtest.json
-@app.route("/backtest")
-def backtest():
-    auth = _require_key()
-    if auth: return auth
-
-    src = os.path.join(DATA_DIR, "backtest", "backtest.json")
-    data = _load_json(src) or {"results": []}
-    return _json_ok(data)
-
-# ---- ARCHIVES ----
-# List all archive files (date keyed) or return specific file with ?date=YYYY-MM-DD
-@app.route("/archives")
-def archives():
-    auth = _require_key()
-    if auth: return auth
-
-    arc_dir = os.path.join(DATA_DIR, "archives")
-    date = request.args.get("date")
-    if date:
-        matches = glob.glob(os.path.join(arc_dir, f"*{date}*.json"))
-        if matches:
-            js = _load_json(sorted(matches)[-1])
-            return _json_ok(js or {})
-        return _json_ok({"error": "not found", "date": date})
-
-    files = sorted(os.path.basename(p) for p in glob.glob(os.path.join(arc_dir, "*.json")))
-    return _json_ok({"files": files})
-
-# ---- Legacy /Glide aliases kept for your app rows ----
-@app.route("/glide_view_predictions")
-def glide_view_predictions():
-    # Same as /predictions but returns {"predictions": [...]}
-    auth = _require_key()
-    if auth: return auth
-    with app.test_request_context():
-        items = predictions().json if hasattr(predictions(), "json") else []
-    return _json_ok({"predictions": items})
-
-# ---- MAIN (Railway port) ----
-import io, csv
-
-def _flatten_predictions(items):
-    """Flatten your per-game predictions into uniform rows."""
+    """
+    Flatten list of game objects that look like:
+      { "game": "...", "date": "YYYY-MM-DD", "hot_number": .., "mirror_number": ..,
+        "model_accuracy": .., "predictions": [ {"combo": "1234", "final_score": 0.87}, ... ] }
+    into rows with columns: date, game, hot, mirror, model_accuracy, combo, final_score
+    """
     flat = []
-    for g in items:
+    for g in items or []:
         game = g.get("game")
         date = g.get("date")
         hot = g.get("hot_number")
@@ -196,112 +78,188 @@ def _flatten_predictions(items):
             })
     return flat
 
-def _to_csv_response(rows, filename="predictions.csv"):
-    output = io.StringIO()
-    writer = csv.DictWriter(
-        output,
-        fieldnames=["date","game","hot","mirror","model_accuracy","combo","final_score"],
-        extrasaction="ignore"
-    )
-    writer.writeheader()
-    for r in rows:
-        writer.writerow(r)
-    data = output.getvalue()
-    from flask import Response
-    resp = Response(data, mimetype="text/csv")
-    resp.headers["Content-Disposition"] = f'inline; filename="{filename}"'
-    resp.headers["Cache-Control"] = "no-store"
-    return resp
-
-@app.route("/predictions_csv")
-def predictions_csv():
-    # Auth
-    auth = _require_key()
-    if auth: return auth
-
-    # Load JSON like in /predictions
-    src = os.path.join(DATA_DIR, "predictions", "predictions.json")
-    data = _load_json(src) or {"predictions": []}
-    items = data.get("predictions", [])
-
-    # Optional filters
-    game = request.args.get("game")  # exact match, case-insensitive
-    date = request.args.get("date")  # YYYY-MM-DD
-    if game:
-        items = [r for r in items if str(r.get("game","")).lower() == game.lower()]
-    if date:
-        items = [r for r in items if str(r.get("date")) == date]
-
-    # Flatten & return CSV
-    rows = _flatten_predictions(items)
-    fname = f'predictions_{(game or "all").replace(" ","_")}.csv'
-    return _to_csv_response(rows, filename=fname)
-
-# ---- Convenience endpoints for four games ----
-@app.route("/predictions_csv/mega")
-def predictions_csv_mega():
-    with app.test_request_context(
-        f'/predictions_csv?game=Mega%20millions&key={request.args.get("key","")}'
-    ):
-        return predictions_csv()
-
-@app.route("/predictions_csv/powerball")
-def predictions_csv_powerball():
-    with app.test_request_context(
-        f'/predictions_csv?game=Powerball&key={request.args.get("key","")}'
-    ):
-        return predictions_csv()
-
-@app.route("/predictions_csv/nywin3")
-def predictions_csv_nywin3():
-    with app.test_request_context(
-        f'/predictions_csv?game=NY%20win3&key={request.args.get("key","")}'
-    ):
-        return predictions_csv()
-
-@app.route("/predictions_csv/nywin4")
-def predictions_csv_nywin4():
-    with app.test_request_context(
-        f'/predictions_csv?game=NY%20win4&key={request.args.get("key","")}'
-    ):
-        return predictions_csv()
-# ---- CSV Routes ----
-
-@app.route("/backtest_csv")
-def backtest_csv():
-    auth = _require_key()
-    if auth: return auth
-    src = os.path.join(DATA_DIR, "backtest", "backtest.json")
-    data = _load_json(src) or {"results": []}
-    rows = data.get("results", [])
-    return _to_csv_response(rows, filename="backtest.csv")
-
-
-@app.route("/weekly_report_csv")
-def weekly_report_csv():
-    auth = _require_key()
-    if auth: return auth
-    src = os.path.join(DATA_DIR, "weekly_report", "weekly_report.json")
-    data = _load_json(src) or {"report_data": []}
-    rows = data.get("report_data", [])
-    return _to_csv_response(rows, filename="weekly_report.csv")
-
-
-# ---- CSV with optional ?date=YYYY-MM-DD ----
-
 def _filter_by_game(rows, game):
     if not game:
         return rows
     g = game.strip().lower()
     return [r for r in rows if str(r.get("game", "")).lower() == g]
 
+# -------------------------
+# Basic routes
+# -------------------------
+@app.route("/")
+def home():
+    return _json_ok({"status": "ok", "message": "Lottery backend is running (Flask) on Railway"})
 
-@app.route("/historical_csv")
-def historical_csv():
-    """Historical week CSV with optional ?date=YYYY-MM-DD and ?game=."""
+@app.route("/health")
+def health():
+    return _json_ok({"status": "ok"})
+
+@app.route("/routes")
+def routes():
+    return _json_ok(sorted([r.rule for r in app.url_map.iter_rules()]))
+
+# -------------------------
+# JSON API (Glide-friendly)
+# -------------------------
+# /predictions -> list[ {...} ], optional ?game=&date=YYYY-MM-DD
+@app.route("/predictions")
+def predictions():
     auth = _require_key()
     if auth: return auth
+    src = os.path.join(DATA_DIR, "predictions", "predictions.json")
+    data = _load_json(src) or {"predictions": []}
+    items = data.get("predictions", [])
 
+    game = request.args.get("game")
+    date = request.args.get("date")
+    if game:
+        items = [r for r in items if str(r.get("game","")).lower() == game.lower()]
+    if date:
+        items = [r for r in items if str(r.get("date")) == date]
+    return _json_ok(items)
+
+# /glide_weekly_report -> {"report_data":[...]}
+@app.route("/glide_weekly_report")
+def glide_weekly_report():
+    auth = _require_key()
+    if auth: return auth
+    src = os.path.join(DATA_DIR, "weekly_report", "weekly_report.json")
+    report = _load_json(src) or {"report_data": []}
+    if isinstance(report, list):
+        report = {"report_data": report}
+    if "report_data" not in report:
+        report = {"report_data": []}
+    return _json_ok(report)
+
+# /historical_week -> {"report_data":[...]}, optional ?date=YYYY-MM-DD (matches filename)
+@app.route("/historical_week")
+def historical_week():
+    auth = _require_key()
+    if auth: return auth
+    hw_dir = os.path.join(DATA_DIR, "historical_week")
+    qdate = request.args.get("date")
+    path = None
+    if qdate:
+        matches = glob.glob(os.path.join(hw_dir, f"*{qdate}*.json"))
+        if matches: path = sorted(matches)[-1]
+    else:
+        matches = glob.glob(os.path.join(hw_dir, "*.json"))
+        if matches: path = sorted(matches)[-1]
+    js = _load_json(path) if path else None
+    return _json_ok(js or {"report_data": []})
+
+# /backtest -> {"results":[...]} or {"hit_data":[...]} (we'll pass through)
+@app.route("/backtest")
+def backtest():
+    auth = _require_key()
+    if auth: return auth
+    src = os.path.join(DATA_DIR, "backtest", "backtest.json")
+    data = _load_json(src) or {}
+    return _json_ok(data)
+
+# /archives -> list archive files, or ?date=YYYY-MM-DD returns that file’s data
+@app.route("/archives")
+def archives():
+    auth = _require_key()
+    if auth: return auth
+    arc_dir = os.path.join(DATA_DIR, "archives")
+    qdate = request.args.get("date")
+    if qdate:
+        matches = glob.glob(os.path.join(arc_dir, f"*{qdate}*.json"))
+        if matches:
+            js = _load_json(sorted(matches)[-1])
+            return _json_ok(js or {})
+        return _json_ok({"error": "not found", "date": qdate})
+    files = sorted(os.path.basename(p) for p in glob.glob(os.path.join(arc_dir, "*.json")))
+    return _json_ok({"files": files})
+
+# Legacy alias: {"predictions":[...]} wrapper around /predictions
+@app.route("/glide_view_predictions")
+def glide_view_predictions():
+    auth = _require_key()
+    if auth: return auth
+    # emulate calling /predictions in the same request context
+    items = []
+    src = os.path.join(DATA_DIR, "predictions", "predictions.json")
+    data = _load_json(src) or {"predictions": []}
+    items = data.get("predictions", [])
+    return _json_ok({"predictions": items})
+
+# -------------------------
+# CSV API
+# -------------------------
+# Generic Predictions CSV + 4 shortcuts (already added earlier, keep if you’re using them)
+@app.route("/predictions_csv")
+def predictions_csv():
+    auth = _require_key()
+    if auth: return auth
+    src = os.path.join(DATA_DIR, "predictions", "predictions.json")
+    data = _load_json(src) or {"predictions": []}
+    items = data.get("predictions", [])
+
+    game = request.args.get("game")
+    date = request.args.get("date")
+    if game:
+        items = [r for r in items if str(r.get("game","")).lower() == game.lower()]
+    if date:
+        items = [r for r in items if str(r.get("date")) == date]
+
+    rows = _flatten_predictions(items)
+    fname = f'predictions_{(game or "all").replace(" ","_")}.csv'
+    return _to_csv_response(rows, filename=fname)
+
+@app.route("/predictions_csv/mega")
+def predictions_csv_mega():
+    request.args = request.args.copy()
+    return predictions_csv()
+
+@app.route("/predictions_csv/powerball")
+def predictions_csv_powerball():
+    request.args = request.args.copy()
+    return predictions_csv()
+
+@app.route("/predictions_csv/nywin3")
+def predictions_csv_nywin3():
+    request.args = request.args.copy()
+    return predictions_csv()
+
+@app.route("/predictions_csv/nywin4")
+def predictions_csv_nywin4():
+    request.args = request.args.copy()
+    return predictions_csv()
+
+# Weekly report CSV with ?game=
+@app.route("/weekly_report_csv")
+def weekly_report_csv():
+    auth = _require_key()
+    if auth: return auth
+    qgame = request.args.get("game")
+    src = os.path.join(DATA_DIR, "weekly_report", "weekly_report.json")
+    data = _load_json(src) or {"report_data": []}
+    rows = data.get("report_data", [])
+    rows = _filter_by_game(rows, qgame)
+    fname = "weekly_report.csv" if not qgame else f"weekly_report_{qgame}.csv"
+    return _to_csv_response(rows, filename=fname)
+
+# Backtest CSV with ?game=
+@app.route("/backtest_csv")
+def backtest_csv():
+    auth = _require_key()
+    if auth: return auth
+    qgame = request.args.get("game")
+    src = os.path.join(DATA_DIR, "backtest", "backtest.json")
+    js = _load_json(src) or {}
+    rows = js.get("results") or js.get("hit_data") or []
+    rows = _filter_by_game(rows, qgame)
+    fname = "backtest.csv" if not qgame else f"backtest_{qgame}.csv"
+    return _to_csv_response(rows, filename=fname)
+
+# Historical week CSV with ?date=YYYY-MM-DD and ?game=
+@app.route("/historical_csv")
+def historical_csv():
+    auth = _require_key()
+    if auth: return auth
     hw_dir = os.path.join(DATA_DIR, "historical_week")
     qdate = request.args.get("date")
     qgame = request.args.get("game")
@@ -326,41 +284,39 @@ def historical_csv():
         fname = f"historical_{qdate}.csv"
     elif qgame:
         fname = f"historical_{qgame}.csv"
-
     return _to_csv_response(rows, filename=fname)
 
-
+# Archives CSV with ?date=YYYY-MM-DD and ?game=
 @app.route("/archives_csv")
 def archives_csv():
-    """Archives CSV with optional ?date=YYYY-MM-DD and ?game=."""
     auth = _require_key()
     if auth: return auth
-
     arc_dir = os.path.join(DATA_DIR, "archives")
     qdate = request.args.get("date")
     qgame = request.args.get("game")
 
-    # If date provided: return (filtered) contents of that one file
     if qdate:
         matches = glob.glob(os.path.join(arc_dir, f"*{qdate}*.json"))
         if not matches:
             return _to_csv_response([], filename=f"archives_{qdate}.csv")
-        js = _load_json(sorted(matches)[-1]) or {}
+        js = _load_json(sorted(matches)[-1]) or []
         rows = js if isinstance(js, list) else [js]
         rows = _filter_by_game(rows, qgame)
-
         fname = f"archives_{qdate}.csv" if not qgame else f"archives_{qdate}_{qgame}.csv"
         return _to_csv_response(rows, filename=fname)
 
-    # No date: merge all archives then (optionally) filter by game
+    # No date: combine all archives and (optionally) filter by game
     rows = []
     for p in sorted(glob.glob(os.path.join(arc_dir, "*.json"))):
-        js = _load_json(p) or {}
+        js = _load_json(p) or []
         rows.extend(js if isinstance(js, list) else [js])
     rows = _filter_by_game(rows, qgame)
-
     fname = "archives.csv" if not qgame else f"archives_{qgame}.csv"
     return _to_csv_response(rows, filename=fname)
+
+# -------------------------
+# Main
+# -------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
