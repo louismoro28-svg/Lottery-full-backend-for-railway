@@ -1,0 +1,11 @@
+{
+  "week_start": "2024-07-01",
+  "games": [
+    {
+      "game": "Play3",
+      "hit_rate": 25.0,
+      "csv_link": "https://example.com/historical_week.csv",
+      "chart_link": "https://example.com/historical_week_chart.png"
+    }
+  ]
+}

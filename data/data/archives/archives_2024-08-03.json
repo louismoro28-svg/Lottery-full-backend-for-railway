@@ -1,0 +1,14 @@
+[
+  {
+    "date": "2024-08-03",
+    "game": "Play3",
+    "first_predicted_combo": [
+      5,
+      8,
+      8
+    ],
+    "score_for_combo": 0.92,
+    "hot_number": 8,
+    "mirror_number": 9
+  }
+]
