@@ -289,59 +289,78 @@ def weekly_report_csv():
 
 # ---- CSV with optional ?date=YYYY-MM-DD ----
 
+def _filter_by_game(rows, game):
+    if not game:
+        return rows
+    g = game.strip().lower()
+    return [r for r in rows if str(r.get("game", "")).lower() == g]
+
+
 @app.route("/historical_csv")
 def historical_csv():
-    """Returns historical_week CSV.
-       If ?date=YYYY-MM-DD is provided, picks the file that contains that date in its name.
-       Otherwise returns the latest available file."""
+    """Historical week CSV with optional ?date=YYYY-MM-DD and ?game=."""
     auth = _require_key()
     if auth: return auth
 
     hw_dir = os.path.join(DATA_DIR, "historical_week")
-    qdate = request.args.get("date")  # e.g. 2024-07-01
+    qdate = request.args.get("date")
+    qgame = request.args.get("game")
 
     matches = []
     if qdate:
         matches = glob.glob(os.path.join(hw_dir, f"*{qdate}*.json"))
-    if not matches:  # fallback to latest
+    if not matches:
         matches = glob.glob(os.path.join(hw_dir, "*.json"))
-
     if not matches:
         return _to_csv_response([], filename="historical.csv")
 
     path = sorted(matches)[-1]
     data = _load_json(path) or {"report_data": []}
     rows = data.get("report_data", [])
-    # filename reflects chosen date if present
-    fname = f"historical_{qdate}.csv" if qdate else "historical.csv"
+    rows = _filter_by_game(rows, qgame)
+
+    fname = "historical.csv"
+    if qdate and qgame:
+        fname = f"historical_{qdate}_{qgame}.csv"
+    elif qdate:
+        fname = f"historical_{qdate}.csv"
+    elif qgame:
+        fname = f"historical_{qgame}.csv"
+
     return _to_csv_response(rows, filename=fname)
 
 
 @app.route("/archives_csv")
 def archives_csv():
-    """Returns archives as CSV.
-       If ?date=YYYY-MM-DD is provided, returns that file only (if present).
-       Otherwise returns a combined CSV of all archive files."""
+    """Archives CSV with optional ?date=YYYY-MM-DD and ?game=."""
     auth = _require_key()
     if auth: return auth
 
     arc_dir = os.path.join(DATA_DIR, "archives")
     qdate = request.args.get("date")
+    qgame = request.args.get("game")
 
+    # If date provided: return (filtered) contents of that one file
     if qdate:
         matches = glob.glob(os.path.join(arc_dir, f"*{qdate}*.json"))
         if not matches:
             return _to_csv_response([], filename=f"archives_{qdate}.csv")
         js = _load_json(sorted(matches)[-1]) or {}
         rows = js if isinstance(js, list) else [js]
-        return _to_csv_response(rows, filename=f"archives_{qdate}.csv")
+        rows = _filter_by_game(rows, qgame)
 
-    # No date: merge all
+        fname = f"archives_{qdate}.csv" if not qgame else f"archives_{qdate}_{qgame}.csv"
+        return _to_csv_response(rows, filename=fname)
+
+    # No date: merge all archives then (optionally) filter by game
     rows = []
     for p in sorted(glob.glob(os.path.join(arc_dir, "*.json"))):
         js = _load_json(p) or {}
         rows.extend(js if isinstance(js, list) else [js])
-    return _to_csv_response(rows, filename="archives.csv")
+    rows = _filter_by_game(rows, qgame)
+
+    fname = "archives.csv" if not qgame else f"archives_{qgame}.csv"
+    return _to_csv_response(rows, filename=fname)
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
