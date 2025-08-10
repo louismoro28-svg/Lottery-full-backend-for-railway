@@ -287,42 +287,61 @@ def weekly_report_csv():
     return _to_csv_response(rows, filename="weekly_report.csv")
 
 
+# ---- CSV with optional ?date=YYYY-MM-DD ----
+
 @app.route("/historical_csv")
 def historical_csv():
+    """Returns historical_week CSV.
+       If ?date=YYYY-MM-DD is provided, picks the file that contains that date in its name.
+       Otherwise returns the latest available file."""
     auth = _require_key()
     if auth: return auth
+
     hw_dir = os.path.join(DATA_DIR, "historical_week")
-    matches = glob.glob(os.path.join(hw_dir, "*.json"))
+    qdate = request.args.get("date")  # e.g. 2024-07-01
+
+    matches = []
+    if qdate:
+        matches = glob.glob(os.path.join(hw_dir, f"*{qdate}*.json"))
+    if not matches:  # fallback to latest
+        matches = glob.glob(os.path.join(hw_dir, "*.json"))
+
     if not matches:
         return _to_csv_response([], filename="historical.csv")
-    latest_file = sorted(matches)[-1]
-    data = _load_json(latest_file) or {"report_data": []}
+
+    path = sorted(matches)[-1]
+    data = _load_json(path) or {"report_data": []}
     rows = data.get("report_data", [])
-    return _to_csv_response(rows, filename="historical.csv")
+    # filename reflects chosen date if present
+    fname = f"historical_{qdate}.csv" if qdate else "historical.csv"
+    return _to_csv_response(rows, filename=fname)
 
 
 @app.route("/archives_csv")
 def archives_csv():
+    """Returns archives as CSV.
+       If ?date=YYYY-MM-DD is provided, returns that file only (if present).
+       Otherwise returns a combined CSV of all archive files."""
     auth = _require_key()
     if auth: return auth
-    arc_dir = os.path.join(DATA_DIR, "archives")
-    date = request.args.get("date")
-    if date:
-        matches = glob.glob(os.path.join(arc_dir, f"*{date}*.json"))
-        if matches:
-            js = _load_json(sorted(matches)[-1]) or {}
-            return _to_csv_response(js if isinstance(js, list) else [js], filename=f"archives_{date}.csv")
-        return _to_csv_response([], filename=f"archives_{date}.csv")
 
-    files = sorted(glob.glob(os.path.join(arc_dir, "*.json")))
-    all_rows = []
-    for f in files:
-        js = _load_json(f) or {}
-        if isinstance(js, list):
-            all_rows.extend(js)
-        else:
-            all_rows.append(js)
-    return _to_csv_response(all_rows, filename="archives.csv")
+    arc_dir = os.path.join(DATA_DIR, "archives")
+    qdate = request.args.get("date")
+
+    if qdate:
+        matches = glob.glob(os.path.join(arc_dir, f"*{qdate}*.json"))
+        if not matches:
+            return _to_csv_response([], filename=f"archives_{qdate}.csv")
+        js = _load_json(sorted(matches)[-1]) or {}
+        rows = js if isinstance(js, list) else [js]
+        return _to_csv_response(rows, filename=f"archives_{qdate}.csv")
+
+    # No date: merge all
+    rows = []
+    for p in sorted(glob.glob(os.path.join(arc_dir, "*.json"))):
+        js = _load_json(p) or {}
+        rows.extend(js if isinstance(js, list) else [js])
+    return _to_csv_response(rows, filename="archives.csv")
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
