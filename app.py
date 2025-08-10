@@ -2,7 +2,9 @@ import os, json, glob
 from datetime import datetime
 from flask import Flask, jsonify, request, send_file, abort
 from flask_cors import CORS
-
+from flask import make_response
+import csv
+from io import StringIO
 # ---- App + CORS ----
 app = Flask(__name__)
 CORS(app)
@@ -31,7 +33,36 @@ def _json_ok(payload):
     return resp
 
 # ---- Basic routes ----
-@app.route("/")
+def _to_csv_response(rows, filename="data.csv"):
+    out = StringIO()
+    # choose columns from keys present
+    cols = sorted({k for r in rows for k in r.keys()}) if rows else ["message"]
+    writer = csv.DictWriter(out, fieldnames=cols)
+    writer.writeheader()
+    if not rows:
+        writer.writerow({"message": "no data"})
+    else:
+        for r in rows:
+            writer.writerow({k: r.get(k) for k in cols})
+    resp = make_response(out.getvalue())
+    resp.headers["Content-Type"] = "text/csv"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+def _flatten_predictions(items):
+    rows = []
+    for r in items or []:
+        combo = r.get("prediction")
+        if isinstance(combo, list):
+            combo = " ".join(map(str, combo))
+        rows.append({
+            "date": r.get("date"),
+            "game": r.get("game"),
+            "prediction": combo,
+            "confidence": r.get("confidence")
+        })
+    return rows@app.route("/")
 def home():
     return _json_ok({"status": "ok", "message": "Lottery backend is running (Flask) on Railway"})
 
@@ -234,6 +265,64 @@ def predictions_csv_nywin4():
         f'/predictions_csv?game=NY%20win4&key={request.args.get("key","")}'
     ):
         return predictions_csv()
+# ---- CSV Routes ----
+
+@app.route("/backtest_csv")
+def backtest_csv():
+    auth = _require_key()
+    if auth: return auth
+    src = os.path.join(DATA_DIR, "backtest", "backtest.json")
+    data = _load_json(src) or {"results": []}
+    rows = data.get("results", [])
+    return _to_csv_response(rows, filename="backtest.csv")
+
+
+@app.route("/weekly_report_csv")
+def weekly_report_csv():
+    auth = _require_key()
+    if auth: return auth
+    src = os.path.join(DATA_DIR, "weekly_report", "weekly_report.json")
+    data = _load_json(src) or {"report_data": []}
+    rows = data.get("report_data", [])
+    return _to_csv_response(rows, filename="weekly_report.csv")
+
+
+@app.route("/historical_csv")
+def historical_csv():
+    auth = _require_key()
+    if auth: return auth
+    hw_dir = os.path.join(DATA_DIR, "historical_week")
+    matches = glob.glob(os.path.join(hw_dir, "*.json"))
+    if not matches:
+        return _to_csv_response([], filename="historical.csv")
+    latest_file = sorted(matches)[-1]
+    data = _load_json(latest_file) or {"report_data": []}
+    rows = data.get("report_data", [])
+    return _to_csv_response(rows, filename="historical.csv")
+
+
+@app.route("/archives_csv")
+def archives_csv():
+    auth = _require_key()
+    if auth: return auth
+    arc_dir = os.path.join(DATA_DIR, "archives")
+    date = request.args.get("date")
+    if date:
+        matches = glob.glob(os.path.join(arc_dir, f"*{date}*.json"))
+        if matches:
+            js = _load_json(sorted(matches)[-1]) or {}
+            return _to_csv_response(js if isinstance(js, list) else [js], filename=f"archives_{date}.csv")
+        return _to_csv_response([], filename=f"archives_{date}.csv")
+
+    files = sorted(glob.glob(os.path.join(arc_dir, "*.json")))
+    all_rows = []
+    for f in files:
+        js = _load_json(f) or {}
+        if isinstance(js, list):
+            all_rows.extend(js)
+        else:
+            all_rows.append(js)
+    return _to_csv_response(all_rows, filename="archives.csv")
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
