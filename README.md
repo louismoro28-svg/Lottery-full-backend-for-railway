@@ -3,6 +3,26 @@
 
 This backend supports both the **new clean endpoints** and **legacy alias endpoints** so your existing Glide rows keep working.
 
+## Quick Start
+
+### Local Development
+```bash
+# Clone the repository
+git clone https://github.com/louismoro28-svg/Lottery-full-backend-for-railway.git
+cd Lottery-full-backend-for-railway
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Set API key
+export API_KEY=mysecretkey123
+
+# Run the application
+python app.py
+```
+
+The server will start at `http://localhost:8080`
+
 ## Endpoints
 - `/health`
 - `/predictions?key=...`
@@ -25,3 +45,11 @@ python app.py
 ```
 API_KEY=mysecretkey123
 ```
+
+## Contributing
+
+Want to contribute? Check out our [Contributing Guide](CONTRIBUTING.md) for instructions on:
+- Setting up the development environment
+- Creating your own version of this backend
+- Making and submitting changes
+- Testing guidelines
